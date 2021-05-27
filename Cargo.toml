@@ -11,6 +11,7 @@ edition = "2018"
 
 [lib]
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "folder"

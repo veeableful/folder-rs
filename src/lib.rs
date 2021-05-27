@@ -8,17 +8,23 @@ use csv::StringRecord;
 use serde_json::{Value,Map};
 use serde::Serialize;
 
-mod filters;
+const PUNCTUATIONS: &[char]= &['!','"','#','$','%','&','(',')','*','+',',','-','.','/',':',';','<','=','>','?','@','[','\\',']','^','_','`','{','|','}','~'];
+const STOP_WORDS: &[&str] = &[
+	"a", "and", "are", "as", "at", "be", "but", "by", "for",
+	"if", "in", "into", "is", "it", "no", "not", "of", "on",
+	"or", "s", "such", "t", "that", "the", "their", "then",
+	"there", "these", "they", "this", "to", "was", "will",
+	"with", "www",
+];
 
-//const FIELD_NAMES_FILE_EXTENSION : &str = "fns";
 const DOCUMENTS_FILE_EXTENSION : &str = "dcs";
 const DOCUMENT_STATS_FILE_EXTENSION : &str = "dst";
 const TERM_STATS_FILE_EXTENSION : &str = "tst";
 const SHARD_COUNT_FILE_NAME : &str = "shard_count";
 
+#[derive(Default)]
 pub struct Index {
     name: String,
-    //field_names: Vec<String>,
     documents: BTreeMap<DocumentID, Value>,
     document_stats: BTreeMap<DocumentID, DocumentStat>,
     term_stats: TermStats,
@@ -29,34 +35,36 @@ pub struct Index {
 }
 
 type TermStats = BTreeMap<Token, TermStat>;
-//type TermStats = RefCell<BTreeMap<Token, TermStat>>;
-
 type TermStatsRef<'a> = BTreeMap<Token, TermStat>;
-//type TermStatsRef<'a> = RefMut<'a, BTreeMap<Token, TermStat>>;
 
 trait AnalyzableField {
-    fn analyze(&self, parent_field_name: String, m: &mut BTreeMap<String, Vec<String>>);
+    fn analyze(&self, parent_field_name: &str, m: &mut BTreeMap<String, Vec<String>>);
 }
 
 impl AnalyzableField for String {
-    fn analyze(&self, parent_field_name: String, m: &mut BTreeMap<String, Vec<String>>) {
-        m.get_mut(&parent_field_name).map(|a| a.push(self.clone()));
+    fn analyze(&self, parent_field_name: &str, m: &mut BTreeMap<String, Vec<String>>) {
+        if let Some(entry) = m.get_mut(parent_field_name) {
+            entry.push(self.clone());
+        }
     }
 }
 
 impl AnalyzableField for Vec<String> {
-    fn analyze(&self, parent_field_name: String, m: &mut BTreeMap<String, Vec<String>>) {
-        m.get_mut(&parent_field_name).map(|a| a.extend(self.clone()));
+    fn analyze(&self, parent_field_name: &str, m: &mut BTreeMap<String, Vec<String>>) {
+        if let Some(entry) = m.get_mut(parent_field_name) {
+            entry.extend(self.iter().cloned());
+        }
     }
 }
 
 impl AnalyzableField for BTreeMap<String, Box<dyn AnalyzableField>> {
-    fn analyze(&self, parent_field_name: String, m: &mut BTreeMap<String, Vec<String>>) {
+    fn analyze(&self, parent_field_name: &str, m: &mut BTreeMap<String, Vec<String>>) {
         for (field, value) in self.iter() {
-            let field = if parent_field_name.is_empty() {
-                field.clone()
+            if parent_field_name.is_empty() {
+                value.analyze(field, m);
             } else {
-                format!("{}.{}", parent_field_name, field)
+                let with_parent = format!("{}.{}", parent_field_name, field);
+                value.analyze(&with_parent, m);
             };
             value.analyze(field, m);
         }
@@ -64,26 +72,24 @@ impl AnalyzableField for BTreeMap<String, Box<dyn AnalyzableField>> {
 }
 
 impl AnalyzableField for Value {
-    fn analyze(&self, parent_field_name: String, m: &mut BTreeMap<String, Vec<String>>) {
+    fn analyze(&self, parent_field_name: &str, m: &mut BTreeMap<String, Vec<String>>) {
         match &self {
             Value::String(value) => {
-                m.get_mut(&parent_field_name).map(|a| a.push(value.clone()));
+                value.analyze(parent_field_name, m);
             },
             Value::Array(value) => {
-                for v in value {
-                    if let Value::String(v) = v {
-                        m.get_mut(&parent_field_name).map(|a| a.push(v.clone()));
-                    }
+                if let Some(entry) = m.get_mut(parent_field_name) {
+                    entry.extend(value.iter().filter_map(Value::as_str).map(String::from));
                 }
             },
             Value::Object(value) => {
                 for (field, value) in value.iter() {
-                    let field = if parent_field_name.is_empty() {
-                        field.clone()
+                    if parent_field_name.is_empty() {
+                        value.analyze(field, m);
                     } else {
-                        format!("{}.{}", parent_field_name, field)
-                    };
-                    value.analyze(field, m);
+                        let with_parent = format!("{}.{}", parent_field_name, field);
+                        value.analyze(&with_parent, m);
+                    }
                 }
             },
             _ => {},
@@ -119,34 +125,26 @@ impl SearchResult {
 }
 
 pub struct SearchOptions {
-	//use_cache: bool, // Whether to use and/or keep relevant data in memory
 	size: usize,  // Number of documents to return
 	from: usize,  // Starting offset for returned documents
 }
 
-pub const DEFAULT_SEARCH_OPTIONS: SearchOptions = SearchOptions {
-    //use_cache: true,
-    size: 10,
-    from: 0,
-};
-
-impl Index {
-    pub fn new() -> Index {
-        Index{
-            name: String::new(),
-            //field_names: Vec::new(),
-            documents: BTreeMap::new(),
-            document_stats: BTreeMap::new(),
-            term_stats: BTreeMap::new(),
-            shard_count: 0,
-            loaded_documents_shards: BTreeMap::new(),
-            loaded_document_stats_shards: BTreeMap::new(),
-            loaded_term_stats_shards: BTreeMap::new(),
+impl Default for SearchOptions {
+    fn default() -> Self {
+        Self {
+            size: 10,
+            from: 0,
         }
     }
+}
 
-    pub fn load(index_name: &str) -> Result<Index, ()> {
-        let mut index = Index::new();
+impl Index {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn load(index_name: &str) -> Result<Self, ()> {
+        let mut index = Self::new();
         index.name = index_name.to_string();
         index.load_shard_count()?;
         Ok(index)
@@ -157,7 +155,7 @@ impl Index {
     }
 
     pub fn search(&mut self, query: &str) -> Result<SearchResult, ()> {
-        search_with_options(query, DEFAULT_SEARCH_OPTIONS, &self.name, &mut self.documents, &mut self.loaded_documents_shards, &mut self.document_stats, &mut self.loaded_document_stats_shards, &mut self.term_stats, &mut self.loaded_term_stats_shards, self.shard_count)
+        search_with_options(query, SearchOptions::default(), &self.name, &mut self.documents, &mut self.loaded_documents_shards, &mut self.document_stats, &mut self.loaded_document_stats_shards, &mut self.term_stats, &mut self.loaded_term_stats_shards, self.shard_count)
     }
 
     /*
@@ -237,17 +235,17 @@ impl Index {
 }
 
 fn analyze(s: &str) -> Vec<String> {
-    let mut tokens: Vec<String> = s.split(&[',', '、', '　', ' '][..]).map(|v| v.to_string()).collect();
-    tokens = filters::lowercase_filter(tokens);
-    tokens = filters::punctuation_filter(tokens);
-    tokens = filters::stop_word_filter(tokens);
-    tokens
+    s.split(&[',', '、', '　', ' '][..])
+        .map(|s| s.to_lowercase())
+        .map(|s| s.replace(PUNCTUATIONS, ""))
+        .filter(|s| !STOP_WORDS.contains(&s.as_str()))
+        .collect()
 }
 
 pub fn search_with_options(query: &str, opts: SearchOptions, index_name: &str, documents: &mut BTreeMap<DocumentID, Value>, loaded_documents_shards: &mut BTreeMap<usize, bool>, document_stats: &mut BTreeMap<DocumentID, DocumentStat>, loaded_document_stats_shards: &mut BTreeMap<usize, bool>, term_stats: &mut TermStats, loaded_term_stats_shards: &mut BTreeMap<usize, bool>, shard_count: usize) -> Result<SearchResult, ()> {
     let start_time = Instant::now();
     let tmp = analyze(query);
-    let tokens: Vec<&str> = tmp.iter().map(|token| token.as_ref()).collect();
+    let tokens: Vec<&str> = tmp.iter().map(String::as_str).collect();
     for token in &tokens {
         let shard_id = calculate_shard_id(token, shard_count);
         load_term_stats_from_shard(index_name, term_stats, loaded_term_stats_shards, shard_id)?;
@@ -279,20 +277,23 @@ fn find_documents<'a>(term_stats: &'a TermStats, tokens: &[&str]) -> Result<(Vec
             continue;
         };
 
-        let mut ids: HashSet<&str> = HashSet::new();
-        for id in &term_stat.document_ids {
-            ids.insert(id);
-        }
+        let ids: Vec<&'a str> = term_stat.document_ids.iter().map(String::as_str).collect();
         if document_ids_set.len() == 0 {
-            document_ids_set = ids;
+            document_ids_set = ids.iter().cloned().collect();
         } else if document_ids_set.len() == 1 {
             break;
         } else {
-            document_ids_set = document_ids_set.intersection(&ids).map(|s| *s).collect();
+            let mut new_ids_set = HashSet::new();
+            for id in ids {
+                if let Some(x) = document_ids_set.take(id) {
+                    new_ids_set.insert(x);
+                }
+            }
+            document_ids_set = new_ids_set;
         }
     }
 
-    let document_ids = document_ids_set.into_iter().map(|v| v).collect();
+    let document_ids = document_ids_set.into_iter().collect();
     let elapsed_time = start_time.elapsed();
 
     Ok((document_ids, elapsed_time))
@@ -302,28 +303,13 @@ pub fn sort_documents<'a>(index_name: &str, documents: &BTreeMap<DocumentID, Val
     let start_time = Instant::now();
     let mut document_id_scores = Vec::with_capacity(document_ids.len());
 
-    struct DocumentIDScore<'a> {
-        document_id: &'a str,
-        score: f64,
-    }
-
     for document_id in document_ids {
         let score = calculate_score(index_name, documents, document_stats, loaded_document_stats_shards, term_stats, shard_count, &document_id, tokens)?;
-        document_id_scores.push(DocumentIDScore{
-            document_id: document_id,
-            score,
-        });
+        document_id_scores.push((document_id, score));
     }
 
-    document_id_scores.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
-    let mut document_ids = Vec::new();
-    let mut scores = Vec::new();
-
-    for document_id_score in document_id_scores {
-        document_ids.push(document_id_score.document_id);
-        scores.push(document_id_score.score);
-    }
-
+    document_id_scores.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    let (document_ids, scores) = document_id_scores.into_iter().unzip();
     Ok((document_ids, scores, start_time.elapsed()))
 }
 
@@ -338,13 +324,9 @@ fn fetch_hits(index_name: &str, documents: &mut BTreeMap<DocumentID, Value>, loa
         n = size;
     }
 
-    for (i, document_id) in document_ids[from..from+n].into_iter().enumerate() {
-        let document = fetch_document(index_name, documents, loaded_documents_shards, document_id, shard_count)?;
-        hits.push(Hit{
-            id: document_id.to_string(),
-            score: scores[from+i],
-            source: document,
-        });
+    for (id, score) in document_ids.iter().cloned().zip(scores).skip(from).take(n) {
+        let source = fetch_document(index_name, documents, loaded_documents_shards, &id, shard_count)?;
+        hits.push(Hit{ id: id.to_string(), score, source });
     }
     
     Ok(hits)
@@ -453,19 +435,11 @@ fn load_document_stats_from_reader<T: Read>(document_stats: &mut BTreeMap<Docume
 }
 
 fn fetch_document_stat<'a>(index_name: &str, document_stats: &'a mut BTreeMap<DocumentID, DocumentStat>, loaded_document_stats_shards: &mut BTreeMap<usize, bool>, document_id: &str, shard_count: usize) -> Result<Option<&'a DocumentStat>, ()> {
-    if document_stats.contains_key(document_id) {
-        let document_stat = document_stats.get(document_id).unwrap();
-        return Ok(Some(document_stat));
-    } else {
+    if !document_stats.contains_key(document_id) {
         let shard_id = calculate_shard_id(&document_id, shard_count);
         load_document_stats_from_shard(index_name, document_stats, loaded_document_stats_shards, shard_id)?;
-
-        let document_stat = document_stats.get(document_id);
-        if let Some(document_stat) = document_stat {
-            return Ok(Some(document_stat));
-        }
-        Ok(None)
     }
+    Ok(document_stats.get(document_id))
 }
 
 pub fn fetch_term_stat<'a>(index_name: &str, term_stats: &'a mut TermStats, loaded_term_stats_shards: &mut BTreeMap<usize, bool>, token: &str, shard_count: usize) -> Result<Option<&'a TermStat>, ()> {
@@ -503,8 +477,8 @@ fn load_term_stats_from_reader<T: Read>(term_stats: &mut TermStatsRef, r: T) -> 
 
     for result in csvr.records() {
         let record = result.unwrap();
-        let term = record.get(0).unwrap();
-        let document_ids: Vec<String>= record.get(1).unwrap().split(" ").to_owned().map(|s| s.to_string()).collect();
+        let term = &record[0];
+        let document_ids = record[1].split(" ").map(String::from).collect();
         insert_term_stats_document_ids(term_stats, term, document_ids);
     }
 
@@ -539,11 +513,11 @@ fn term_frequency(index_name: &str, document_stats: &mut BTreeMap<DocumentID, Do
         return Ok(0.0);
     };
 
-    if let Some(term_frequency) = document_stat.term_frequency.get(token) {
-        Ok(*term_frequency as f64)
-    } else {
-        Ok(0.0)
-    }
+    let term_frequency = document_stat
+        .term_frequency
+        .get(token)
+        .map_or(0.0, |n| *n as f64);
+    Ok(term_frequency)
 }
 
 fn inverse_document_frequency(documents: &BTreeMap<DocumentID, Value>, term_stats: &TermStatsRef, token: &str) -> Result<f64, ()> {

@@ -3,14 +3,8 @@ use folder_rs::Index;
 
 fn criterion_benchmark(c: &mut Criterion) {
     let mut index = Index::load("index").unwrap();
-    c.bench_function("analyze \"lunar new year\"", |b| b.iter(|| {
-        index.analyze(black_box("lunar new year"));
-    }));
-    c.bench_function("find_documents [\"lunar\", \"new\", \'year\"]", |b| b.iter(|| {
-        index.find_documents(black_box(&vec!["lunar", "new", "year"])).unwrap();
-    }));
-    c.bench_function("fetch_term_stat \"lunar\"", |b| b.iter(|| {
-        index.fetch_term_stat(black_box("lunar")).unwrap();
+    c.bench_function("search \"lunar new year\"", |b| b.iter(|| {
+        index.search(black_box("lunar new year")).unwrap();
     }));
 }
 
