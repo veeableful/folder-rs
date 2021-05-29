@@ -288,7 +288,7 @@ async fn sort_documents<'a>(this: Rc<RefCell<Index>>, document_ids: Vec<String>,
         document_id_scores.push((document_id, score));
     }
 
-    document_id_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    document_id_scores.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
     let (document_ids, scores) = document_id_scores.into_iter().unzip();
     Ok((document_ids, scores))
 }
