@@ -1,8 +1,11 @@
 [package]
-name = "folder-web"
+name = "folder-rs-web"
+description = "Search engine using static files served by web server"
 version = "0.1.0"
 authors = ["Lilis Iskandar <lilis@veand.co>"]
 edition = "2018"
+repository = "github.com/veeableful/folder-rs"
+license = "MIT"
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
