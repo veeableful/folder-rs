@@ -6,7 +6,7 @@ written in Rust and outputs a WebAssembly package. The API is still being improv
 ## Installation
 
 ```
-npm install --save folder-web-rs
+npm install --save folder-rs-web
 ```
 
 ## Usage
@@ -17,7 +17,7 @@ the [native binary](https://github.com/veeableful/folder). The [Rust version](ht
 After they are generated, the index directory can be copied to where the web server can serve them. For example, if you have a web server listening on `http://localhost:8080`, the `index` directory can be copied to the web server root directory and be used by a web project like this:
 
 ```javascript
-import * as wasm from "folder-web-rs"
+import * as wasm from "folder-rs-web"
 
 let index = new wasm.IndexHandle('index', 'http://localhost:8080')
 let result = await index.search('lunar new year')
